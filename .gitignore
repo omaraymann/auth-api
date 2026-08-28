@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets: the real .env never gets committed. .env.example (placeholders) does.
+.env
