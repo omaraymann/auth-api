@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
 from supabase import AuthApiError
 
@@ -142,3 +142,53 @@ def login(body: dict):
         )
 
     return session_to_dict(result.session)
+
+
+@app.get("/public/info")
+def public_info():
+    """Public data. No token required - this is the open lobby."""
+    return {"message": "Welcome stranger! This info is public."}
+
+
+def bearer_token(authorization):
+    """Pull the token out of an "Authorization: Bearer <token>" header.
+
+    Returns the token string, or None when the header is absent, uses a different
+    scheme, or carries no token after the scheme. The caller decides what to do
+    about that - this function only parses.
+
+    The scheme is compared case-insensitively because RFC 7235 defines it that way:
+    "bearer", "Bearer" and "BEARER" are all the same scheme to a compliant client.
+    """
+    if not authorization:
+        return None
+
+    parts = authorization.split()
+    if len(parts) != 2:
+        # Covers "Bearer" alone, a bare token with no scheme, and anything with
+        # stray spaces in it.
+        return None
+
+    scheme, token = parts
+    if scheme.lower() != "bearer" or not token:
+        return None
+
+    return token
+
+
+@app.get("/protected/profile")
+def profile(authorization: str | None = Header(default=None)):
+    """Private data. Requires "Authorization: Bearer <token>".
+
+    Stage 2 only checks that a token was presented, not that it is real - a
+    nonsense token still gets in. Stage 3 adds verification against Supabase.
+    """
+    token = bearer_token(authorization)
+    if token is None:
+        # One message for every way the header can be wrong. Saying which mistake
+        # they made would help someone probing the API more than it helps a client.
+        return JSONResponse(
+            status_code=401, content={"error": "Access token required"}
+        )
+
+    return {"message": "You sent a token. It has not been verified yet."}
