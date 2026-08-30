@@ -31,3 +31,17 @@ def check_connection(timeout=5.0):
     )
     response.raise_for_status()
     return response.json()
+
+def sign_up(email, password):
+    """Create a new account. Supabase hashes the password; we never store it.
+
+    Returns an AuthResponse with .user and .session attributes - an object, not a
+    dict, so read it as result.user. Raises AuthApiError if the email is already
+    registered or the password fails the project's rules.
+    """
+    return supabase.auth.sign_up({"email": email, "password": password})
+
+
+def sign_in(email, password):
+    """Exchange credentials for tokens. Supabase does the checking; we never see the hash."""
+    return supabase.auth.sign_in_with_password({"email": email, "password": password})
