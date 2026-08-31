@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from supabase import AuthApiError
 
@@ -177,44 +178,28 @@ def public_info():
     return {"message": "Welcome stranger! This info is public."}
 
 
-def bearer_token(authorization):
-    """Pull the token out of an "Authorization: Bearer <token>" header.
+bearer_scheme = HTTPBearer(auto_error=False)
 
-    Returns the token string, or None when the header is absent, uses a different
-    scheme, or carries no token after the scheme. The caller decides what to do
-    about that - this function only parses.
 
-    The scheme is compared case-insensitively because RFC 7235 defines it that way:
-    "bearer", "Bearer" and "BEARER" are all the same scheme to a compliant client.
-    """
-    if not authorization:
-        return None
-
-    parts = authorization.split()
-    if len(parts) != 2:
-        # Covers "Bearer" alone, a bare token with no scheme, and anything with
-        # stray spaces in it.
-        return None
-
-    scheme, token = parts
-    if scheme.lower() != "bearer" or not token:
-        return None
-
-    return token
-
-def current_user(authorization: str | None = Header(default=None)):
+def current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
     """Verify the caller's token and return their Supabase user.
 
-    Used with Depends() on any protected route. Raises rather than returns,
-    because a dependency's return value is injected into the route - handing back
-    an error response would arrive in the route as if it were the user.
+    Used with Depends() on any protected route. Raises rather than returns, because
+    a dependency's return value is injected into the route - handing back an error
+    response would arrive there as if it were the user.
+
+    HTTPBearer parses the "Authorization: Bearer <token>" header and, as a declared
+    security scheme, is what puts the padlock on these routes in Swagger UI.
+    auto_error=False so that a missing or malformed header yields None instead of
+    FastAPI's own error, leaving the status code and wording to this API.
     """
-    token = bearer_token(authorization)
-    if token is None:
+    if credentials is None:
         raise HTTPException(status_code=401, detail="Access token required")
 
     try:
-        user = auth.get_user(token)
+        user = auth.get_user(credentials.credentials)
     except AuthApiError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
@@ -224,18 +209,19 @@ def current_user(authorization: str | None = Header(default=None)):
     return user
 
 
-def current_token(authorization: str | None = Header(default=None)):
+def current_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
     """Return the caller's raw token, for the one route that needs the string itself.
 
     Deliberately separate from current_user: that one answers "who is calling",
-    this one answers "what did they present". Logout needs both, every other
+    this one answers "what did they present". Logout needs both; every other
     protected route needs only the first.
     """
-    token = bearer_token(authorization)
-    if token is None:
+    if credentials is None:
         raise HTTPException(status_code=401, detail="Access token required")
 
-    return token
+    return credentials.credentials
 
 
 @app.get("/protected/profile")
