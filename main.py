@@ -180,8 +180,8 @@ def bearer_token(authorization):
 def profile(authorization: str | None = Header(default=None)):
     """Private data. Requires "Authorization: Bearer <token>".
 
-    Stage 2 only checks that a token was presented, not that it is real - a
-    nonsense token still gets in. Stage 3 adds verification against Supabase.
+    The token is verified with Supabase, so a tampered or expired one is
+    rejected. Returns the caller's own safe metadata: id, email, created_at.
     """
     token = bearer_token(authorization)
     if token is None:
@@ -191,4 +191,21 @@ def profile(authorization: str | None = Header(default=None)):
             status_code=401, content={"error": "Access token required"}
         )
 
-    return {"message": "You sent a token. It has not been verified yet."}
+    try:
+        user = auth.get_user(token)
+    except AuthApiError:
+        # Tampered, expired, or simply invented. Supabase checked the signature and
+        # said no, so this is the same answer either way.
+        return JSONResponse(
+            status_code=401, content={"error": "Invalid or expired token"}
+        )
+
+    # Belt and braces: the SDK can hand back an empty response rather than raising.
+    # "No exception" is not the same as "a real user", and treating it that way is
+    # how an unauthenticated request quietly gets a 200.
+    if user is None:
+        return JSONResponse(
+            status_code=401, content={"error": "Invalid or expired token"}
+        )
+
+    return user_to_dict(user)

@@ -45,3 +45,21 @@ def sign_up(email, password):
 def sign_in(email, password):
     """Exchange credentials for tokens. Supabase does the checking; we never see the hash."""
     return supabase.auth.sign_in_with_password({"email": email, "password": password})
+
+
+def get_user(token):
+    """Ask Supabase whether a token is genuine, and who it belongs to.
+
+    The token is a required argument and deliberately has no default. The SDK's
+    get_user() accepts being called with nothing, in which case it falls back to
+    whatever session this module-level client is holding - which is whoever logged
+    in most recently, not whoever is making the current request. Requiring the
+    token here makes that mistake impossible to write.
+
+    Returns the Supabase user, or None if there is nothing to return. Raises
+    AuthApiError when Supabase rejects the token as tampered with or expired.
+    """
+    response = supabase.auth.get_user(token)
+    if response is None:
+        return None
+    return response.user
