@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from supabase import AuthApiError
 
 import auth
@@ -34,6 +36,30 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request, exc):
+    """Render every HTTPException in this API's error shape.
+
+    FastAPI's default is {"detail": ...}; everything else here returns
+    {"error": ...}. Registered against Starlette's class rather than FastAPI's so
+    that framework-raised errors, like a 404 for an unknown path, match too.
+    """
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    """Answer 400 in this API's shape when the request body cannot be parsed.
+
+    FastAPI rejects an absent or non-object body before the route runs, with its
+    own 422 and a {"detail": [...]} list. The routes' own checks never get to see
+    it. Since a missing body is missing input like any other, it is answered the
+    same way: 400, {"error": ...}.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={"error": "request body must be a JSON object with email and password"},
+    )
 
 def user_to_dict(user):
     """Convert Supabase's user object into the shape this API publishes.
@@ -63,6 +89,7 @@ def session_to_dict(session):
         "token_type": "bearer",
         "expires_in": session.expires_in,
     }
+
 
 
 @app.post("/auth/signup", status_code=201)
@@ -175,37 +202,66 @@ def bearer_token(authorization):
 
     return token
 
+def current_user(authorization: str | None = Header(default=None)):
+    """Verify the caller's token and return their Supabase user.
 
-@app.get("/protected/profile")
-def profile(authorization: str | None = Header(default=None)):
-    """Private data. Requires "Authorization: Bearer <token>".
-
-    The token is verified with Supabase, so a tampered or expired one is
-    rejected. Returns the caller's own safe metadata: id, email, created_at.
+    Used with Depends() on any protected route. Raises rather than returns,
+    because a dependency's return value is injected into the route - handing back
+    an error response would arrive in the route as if it were the user.
     """
     token = bearer_token(authorization)
     if token is None:
-        # One message for every way the header can be wrong. Saying which mistake
-        # they made would help someone probing the API more than it helps a client.
-        return JSONResponse(
-            status_code=401, content={"error": "Access token required"}
-        )
+        raise HTTPException(status_code=401, detail="Access token required")
 
     try:
         user = auth.get_user(token)
     except AuthApiError:
-        # Tampered, expired, or simply invented. Supabase checked the signature and
-        # said no, so this is the same answer either way.
-        return JSONResponse(
-            status_code=401, content={"error": "Invalid or expired token"}
-        )
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    # Belt and braces: the SDK can hand back an empty response rather than raising.
-    # "No exception" is not the same as "a real user", and treating it that way is
-    # how an unauthenticated request quietly gets a 200.
     if user is None:
-        return JSONResponse(
-            status_code=401, content={"error": "Invalid or expired token"}
-        )
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    return user
+
+
+def current_token(authorization: str | None = Header(default=None)):
+    """Return the caller's raw token, for the one route that needs the string itself.
+
+    Deliberately separate from current_user: that one answers "who is calling",
+    this one answers "what did they present". Logout needs both, every other
+    protected route needs only the first.
+    """
+    token = bearer_token(authorization)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Access token required")
+
+    return token
+
+
+@app.get("/protected/profile")
+def profile(user=Depends(current_user)):
+    """The caller's own safe metadata: id, email, created_at."""
     return user_to_dict(user)
+
+
+@app.get("/protected/dashboard")
+def dashboard(user=Depends(current_user)):
+    """A second protected route - same guard, no new auth code."""
+    return {"message": f"Welcome back, {user.email}."}
+
+
+@app.post("/auth/logout", status_code=204)
+def logout(user=Depends(current_user), token=Depends(current_token)):
+    """End the caller's session. 204 with no body.
+
+    Two dependencies doing different jobs: current_user enforces that the token is
+    genuine, which is what makes this a protected route, and current_token hands
+    over the string Supabase needs in order to revoke it.
+
+    Worth knowing what this achieves. The refresh token is revoked, so no further
+    access tokens can be minted. The access token already in the caller's hands
+    keeps working until its exp - a signed JWT cannot be recalled, which is the
+    price of verifying signatures instead of consulting a session table.
+    """
+    auth.sign_out(token)
+    return None

@@ -63,3 +63,17 @@ def get_user(token):
     if response is None:
         return None
     return response.user
+
+def sign_out(token):
+    """Revoke the refresh tokens behind an access token.
+
+    The token is passed explicitly. supabase.auth.sign_out() takes no token - it
+    reads whatever session this shared client is holding, which on a server is
+    whoever logged in most recently, and it suppresses the resulting error. It
+    would return successfully having logged out the wrong person, or nobody.
+
+    What this does and does not do: it revokes the refresh token, so no new access
+    tokens can be minted. The access token already issued stays valid until its
+    exp - a signed JWT cannot be recalled.
+    """
+    supabase.auth.admin.sign_out(token)
